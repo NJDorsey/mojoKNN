@@ -1,0 +1,14 @@
+[workspace]
+channels = ["conda-forge", "https://conda.modular.com/max-nightly"]
+name = "mojoKNN"
+platforms = ["linux-64"]
+version = "0.1.0"
+
+[tasks]
+run-debug = { cmd = "mojo run -debug-level=full", env = { MOJO_ENABLE_STACK_TRACE_ON_ERROR = "1" } }
+build-debug = { cmd = "mojo build -debug-level=full", env = { MOJO_ENABLE_STACK_TRACE_ON_ERROR = "1" } }
+
+
+[dependencies]
+max = ">=24.5,<25"
+python = "==3.11"
