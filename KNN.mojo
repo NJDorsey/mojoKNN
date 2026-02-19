@@ -40,6 +40,9 @@ struct Matrix[rows: Int, cols: Int]:
         self.data = UnsafePointer[T].alloc(rows * cols)
         memset_zero(self.data, rows * cols)
 
+    fn __del__(owned self):
+        self.data.free()
+
     #Initializes with random values
     @staticmethod
     fn rand() -> Self:
@@ -112,6 +115,9 @@ struct Vector[rows: Int, cols: Int]:
     fn __init__(out self):
         self.data = UnsafePointer[Scalar[vtype]].alloc(rows * cols)
         memset_zero(self.data, rows * cols)
+
+    fn __del__(owned self):
+        self.data.free()
 
     #Initializes with random values
     @staticmethod
