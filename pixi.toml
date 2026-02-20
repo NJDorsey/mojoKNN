@@ -12,3 +12,5 @@ build-debug = { cmd = "mojo build -debug-level=full", env = { MOJO_ENABLE_STACK_
 [dependencies]
 max = ">=24.5,<25"
 python = "==3.11"
+scipy = ">=1.17.0,<2"
+matplotlib = ">=3.10.8,<4"
