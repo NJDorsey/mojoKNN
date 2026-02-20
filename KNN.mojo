@@ -1085,5 +1085,5 @@ fn main() raises:
     print("Brute Force SIMD mean:    ", brute_simd_mean,    "s")
     print("KD-Tree SIMD speedup:     ", kdtree_scalar_mean / kdtree_simd_mean, "x")
     print("Brute Force SIMD speedup: ", brute_scalar_mean  / brute_simd_mean,  "x")
-    print("\nRun the analysis notebook for detailed statistics:")
-    print("  jupyter notebook benchmark_analysis.ipynb")
+    print("\nRun the analysis script for detailed statistics:")
+    print("benchmark_analysis.py")
