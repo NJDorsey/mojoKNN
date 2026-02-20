@@ -7,9 +7,11 @@ k-nearest neighbor queries in high-dimensional spaces.
 from collections import List
 from math import sqrt
 from memory import UnsafePointer
+from sys import simdwidthof
 
 
 alias KDFloat = Float32
+alias KD_SIMD_W = simdwidthof[KDFloat]()
 
 
 @value
@@ -172,6 +174,30 @@ fn euclidean_distance_squared(p1: Point, p2: Point) -> KDFloat:
 
 
 @always_inline
+fn euclidean_distance_squared_simd(p1: Point, p2: Point) -> KDFloat:
+    """SIMD-vectorized squared Euclidean distance between two points.
+
+    Uses List.unsafe_ptr() to get a contiguous pointer to coords data,
+    then processes KD_SIMD_W floats at a time with SIMD load + reduce_add.
+    Falls back to scalar for the tail (dims % KD_SIMD_W remainder).
+    """
+    var dims = len(p1)
+    var p1_ptr = p1.coords.unsafe_ptr()
+    var p2_ptr = p2.coords.unsafe_ptr()
+    var sum_sq: KDFloat = 0.0
+    var k = 0
+    while k + KD_SIMD_W <= dims:
+        var diff = p1_ptr.load[width=KD_SIMD_W](k) - p2_ptr.load[width=KD_SIMD_W](k)
+        sum_sq += (diff * diff).reduce_add()
+        k += KD_SIMD_W
+    while k < dims:
+        var diff = p1_ptr[k] - p2_ptr[k]
+        sum_sq += diff * diff
+        k += 1
+    return sum_sq
+
+
+@always_inline
 fn euclidean_distance(p1: Point, p2: Point) -> KDFloat:
     """Calculate Euclidean distance between two points."""
     return sqrt(euclidean_distance_squared(p1, p2))
@@ -201,7 +227,7 @@ struct KDNode:
         return self.right.__bool__()
 
 
-struct KDTree:
+struct KDTree[use_simd: Bool = False]:
     """A k-d tree for efficient nearest neighbor search."""
     var root: UnsafePointer[KDNode]
     var num_dimensions: Int
@@ -298,7 +324,12 @@ struct KDTree:
             return
 
         var node = node_ptr[]
-        var dist_sq = euclidean_distance_squared(query, node.point)
+        var dist_sq: KDFloat = 0.0
+        @parameter
+        if use_simd:
+            dist_sq = euclidean_distance_squared_simd(query, node.point)
+        else:
+            dist_sq = euclidean_distance_squared(query, node.point)
 
         # Update best if this node is closer
         if dist_sq < best.distance:
@@ -354,7 +385,12 @@ struct KDTree:
             return
 
         var node = node_ptr[]
-        var dist_sq = euclidean_distance_squared(query, node.point)
+        var dist_sq: KDFloat = 0.0
+        @parameter
+        if use_simd:
+            dist_sq = euclidean_distance_squared_simd(query, node.point)
+        else:
+            dist_sq = euclidean_distance_squared(query, node.point)
 
         # Add to heap (heap handles capacity logic)
         heap.push(Neighbor(node.point.original_index, dist_sq))

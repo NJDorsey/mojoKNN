@@ -27,6 +27,8 @@ alias vtype = DType.int64
 # Get optimal number of elements to run with vectorize at compile time.
 # 2x or 4x helps with pipelining and running multiple SIMD operations in parallel.
 alias nelts = get_simd_width()
+# Base SIMD width (no 2x multiplier) for reduce-accumulate distance loops.
+alias simd_w = simdwidthof[T]()
 
 @parameter
 fn get_simd_width() -> Int:
@@ -337,6 +339,36 @@ fn distMatvec(training_data: Matrix, input_pointT: Matrix, mut distmat: Matrix) 
             vectorize[calc_row_euc, nelts, size=distmat.cols]()
 
 
+fn euclidean_dist_simd(
+    training_data: Matrix,
+    test_ptr: UnsafePointer[Float32],
+    mut distmat: Matrix
+) -> None:
+    """SIMD-vectorized brute-force distance from one test point to all training rows.
+
+    Vectorizes over the feature dimension (training_data.cols) using simd_w floats
+    at a time with SIMD load + reduce_add. Falls back to scalar for the tail.
+
+    Args:
+        training_data: Full training Matrix[n_train, n_features] (row-major).
+        test_ptr: Pointer to the test point's feature data (length = training_data.cols).
+        distmat: Output Matrix[n_train, 1] to write squared distances into.
+    """
+    for m in range(training_data.rows):
+        var row_base = m * training_data.cols
+        var sum_sq: Float32 = 0.0
+        var k = 0
+        while k + simd_w <= training_data.cols:
+            var diff = training_data.data.load[width=simd_w](row_base + k) - test_ptr.load[width=simd_w](k)
+            sum_sq += (diff * diff).reduce_add()
+            k += simd_w
+        while k < training_data.cols:
+            var diff = training_data.data[row_base + k] - test_ptr[k]
+            sum_sq += diff * diff
+            k += 1
+        distmat[m, 0] = sum_sq
+
+
 fn most_common_item(count_dict: Dict[Int, Int]) -> Float32:
     # Initialize variables to track the most common item
     most_common = -1.0
@@ -486,6 +518,28 @@ fn runKNN(mut predictedclasses: Matrix, training: Matrix, testing: Matrix, train
 
     # Run in parallel across testing samples
     parallelize[origins = MutableAnyOrigin, func = predict_one](predictedclasses.rows)
+
+
+fn runKNN_simd(mut predictedclasses: Matrix, training: Matrix, testing: Matrix, trainingclasses: Matrix, K: Int) raises:
+    """SIMD-accelerated brute-force KNN using euclidean_dist_simd."""
+    @parameter
+    fn predict_one_simd(i: Int):
+        # local_test_mat laid out as [features, 1]: feature k is at data[k]
+        var local_test_mat = Matrix[testing.cols, 1]()
+        var local_distmat = Matrix[training.rows, 1]()
+        var local_sorted_indices = Vector[training.rows, 1]()
+
+        for j in range(testing.cols):
+            local_test_mat[j, 0] = testing[i, j]
+
+        try:
+            euclidean_dist_simd(training, local_test_mat.data, local_distmat)
+            Sorting.simd_sort_quick(local_distmat, local_sorted_indices, local_distmat.rows)
+            predictedclasses[i, 0] = predict_class(trainingclasses, K, local_sorted_indices)
+        except:
+            print("Running SIMD failed.")
+
+    parallelize[origins = MutableAnyOrigin, func = predict_one_simd](predictedclasses.rows)
 
 
 fn runKNN_kdtree(mut predictedclasses: Matrix, training: Matrix, testing: Matrix, trainingclasses: Matrix, K: Int) raises:
@@ -864,111 +918,172 @@ fn main() raises:
     var NUM_RUNS: Int = 30
 
     print("=" * 60)
-    print("BENCHMARK: K-D Tree vs Brute Force KNN")
+    print("BENCHMARK: KD-Tree & Brute Force — Scalar vs SIMD")
     print("Running", NUM_RUNS, "experiments...")
     print("=" * 60)
 
-    # Build the k-d tree once (shared across all runs)
-    print("\nBuilding k-d tree from", training.rows, "training points...")
-    var train_points = matrix_to_points(training)
-    var tree = KDTree(train_points^)
-    print("K-D tree built. Depth:", tree.get_depth(), "nodes:", tree.count_nodes())
+    # Build both k-d trees once (shared across all runs).
+    # Two separate matrix_to_points calls are required because KDTree takes owned List[Point].
+    print("\nBuilding k-d trees from", training.rows, "training points...")
+    var train_points_scalar = matrix_to_points(training)
+    var train_points_simd   = matrix_to_points(training)
+    var tree_scalar = KDTree[False](train_points_scalar^)
+    var tree_simd   = KDTree[True](train_points_simd^)
+    print("K-D trees built.")
+    print("  Scalar: Depth =", tree_scalar.get_depth(), "  Nodes =", tree_scalar.count_nodes())
+    print("  SIMD:   Depth =", tree_simd.get_depth(),   "  Nodes =", tree_simd.count_nodes())
 
     # Storage for results
-    var kdtree_times = List[Float64]()
-    var brute_times = List[Float64]()
-    var kdtree_accuracies = List[Float64]()
-    var brute_accuracies = List[Float64]()
+    var kdtree_scalar_times      = List[Float64]()
+    var kdtree_simd_times        = List[Float64]()
+    var brute_scalar_times       = List[Float64]()
+    var brute_simd_times         = List[Float64]()
+    var kdtree_scalar_accuracies = List[Float64]()
+    var kdtree_simd_accuracies   = List[Float64]()
+    var brute_scalar_accuracies  = List[Float64]()
+    var brute_simd_accuracies    = List[Float64]()
 
     # Run experiments
     for run in range(NUM_RUNS):
         print("\rRun", run + 1, "/", NUM_RUNS, end="")
 
-        # ==================== K-D Tree KNN ====================
-        var start_time_kdtree = monotonic()
-        var predictedclasses_kdtree = Matrix[testingclasses.rows, 1]()
+        # ==================== K-D Tree Scalar ====================
+        var start_kdtree_scalar = monotonic()
+        var pred_kdtree_scalar = Matrix[testingclasses.rows, 1]()
 
         @parameter
-        fn predict_one_kdtree(i: Int):
+        fn predict_kdtree_scalar(i: Int):
             var query = row_to_point(testing, i)
-            var neighbors = tree.k_nearest_neighbors(query, K)
+            var neighbors = tree_scalar.k_nearest_neighbors(query, K)
             try:
-                predictedclasses_kdtree[i, 0] = predict_class_from_neighbors(trainingclasses, neighbors)
+                pred_kdtree_scalar[i, 0] = predict_class_from_neighbors(trainingclasses, neighbors)
             except:
                 pass
 
-        parallelize[origins = MutableAnyOrigin, func = predict_one_kdtree](predictedclasses_kdtree.rows)
-        var end_time_kdtree = monotonic()
-        var kdtree_time = Float64(end_time_kdtree - start_time_kdtree) / 1000000000.0
+        parallelize[origins = MutableAnyOrigin, func = predict_kdtree_scalar](pred_kdtree_scalar.rows)
+        var kdtree_scalar_time = Float64(monotonic() - start_kdtree_scalar) / 1_000_000_000.0
 
-        # Calculate K-D Tree accuracy
-        var kdtree_correct = 0
+        var kdtree_scalar_correct = 0
         for i in range(testingclasses.rows):
-            if predictedclasses_kdtree[i, 0] == testingclasses[i, 0]:
-                kdtree_correct += 1
-        var kdtree_acc = Float64(kdtree_correct) / Float64(testingclasses.rows) * 100.0
+            if pred_kdtree_scalar[i, 0] == testingclasses[i, 0]:
+                kdtree_scalar_correct += 1
+        var kdtree_scalar_acc = Float64(kdtree_scalar_correct) / Float64(testingclasses.rows) * 100.0
 
-        # ==================== Brute Force KNN ====================
-        var start_time_brute = monotonic()
-        var predictedclasses_brute = Matrix[testingclasses.rows, 1]()
+        # ==================== K-D Tree SIMD ====================
+        var start_kdtree_simd = monotonic()
+        var pred_kdtree_simd = Matrix[testingclasses.rows, 1]()
 
         @parameter
-        fn predict_one_brute(i: Int):
-            local_testingpointT = Matrix[testing.cols, 1]()
-            local_distmat = Matrix[training.rows, 1]()
-            local_sorted_indices = Vector[training.rows, 1]()
+        fn predict_kdtree_simd(i: Int):
+            var query = row_to_point(testing, i)
+            var neighbors = tree_simd.k_nearest_neighbors(query, K)
+            try:
+                pred_kdtree_simd[i, 0] = predict_class_from_neighbors(trainingclasses, neighbors)
+            except:
+                pass
+
+        parallelize[origins = MutableAnyOrigin, func = predict_kdtree_simd](pred_kdtree_simd.rows)
+        var kdtree_simd_time = Float64(monotonic() - start_kdtree_simd) / 1_000_000_000.0
+
+        var kdtree_simd_correct = 0
+        for i in range(testingclasses.rows):
+            if pred_kdtree_simd[i, 0] == testingclasses[i, 0]:
+                kdtree_simd_correct += 1
+        var kdtree_simd_acc = Float64(kdtree_simd_correct) / Float64(testingclasses.rows) * 100.0
+
+        # ==================== Brute Force Scalar ====================
+        var start_brute_scalar = monotonic()
+        var pred_brute_scalar = Matrix[testingclasses.rows, 1]()
+
+        @parameter
+        fn predict_brute_scalar(i: Int):
+            var local_testingpointT = Matrix[testing.cols, 1]()
+            var local_distmat = Matrix[training.rows, 1]()
+            var local_sorted_indices = Vector[training.rows, 1]()
             for j in range(testing.cols):
                 local_testingpointT[j, 0] = testing[i, j]
             try:
                 distMatvec(training, local_testingpointT, local_distmat)
                 Sorting.simd_sort_quick(local_distmat, local_sorted_indices, local_distmat.rows)
-                predictedclasses_brute[i, 0] = predict_class(trainingclasses, K, local_sorted_indices)
+                pred_brute_scalar[i, 0] = predict_class(trainingclasses, K, local_sorted_indices)
             except:
                 pass
 
-        parallelize[origins = MutableAnyOrigin, func = predict_one_brute](predictedclasses_brute.rows)
-        var end_time_brute = monotonic()
-        var brute_time = Float64(end_time_brute - start_time_brute) / 1000000000.0
+        parallelize[origins = MutableAnyOrigin, func = predict_brute_scalar](pred_brute_scalar.rows)
+        var brute_scalar_time = Float64(monotonic() - start_brute_scalar) / 1_000_000_000.0
 
-        # Calculate Brute Force accuracy
-        var brute_correct = 0
+        var brute_scalar_correct = 0
         for i in range(testingclasses.rows):
-            if predictedclasses_brute[i, 0] == testingclasses[i, 0]:
-                brute_correct += 1
-        var brute_acc = Float64(brute_correct) / Float64(testingclasses.rows) * 100.0
+            if pred_brute_scalar[i, 0] == testingclasses[i, 0]:
+                brute_scalar_correct += 1
+        var brute_scalar_acc = Float64(brute_scalar_correct) / Float64(testingclasses.rows) * 100.0
+
+        # ==================== Brute Force SIMD ====================
+        var start_brute_simd = monotonic()
+        var pred_brute_simd = Matrix[testingclasses.rows, 1]()
+        runKNN_simd(pred_brute_simd, training, testing, trainingclasses, K)
+        var brute_simd_time = Float64(monotonic() - start_brute_simd) / 1_000_000_000.0
+
+        var brute_simd_correct = 0
+        for i in range(testingclasses.rows):
+            if pred_brute_simd[i, 0] == testingclasses[i, 0]:
+                brute_simd_correct += 1
+        var brute_simd_acc = Float64(brute_simd_correct) / Float64(testingclasses.rows) * 100.0
 
         # Store results
-        kdtree_times.append(kdtree_time)
-        brute_times.append(brute_time)
-        kdtree_accuracies.append(kdtree_acc)
-        brute_accuracies.append(brute_acc)
+        kdtree_scalar_times.append(kdtree_scalar_time)
+        kdtree_simd_times.append(kdtree_simd_time)
+        brute_scalar_times.append(brute_scalar_time)
+        brute_simd_times.append(brute_simd_time)
+        kdtree_scalar_accuracies.append(kdtree_scalar_acc)
+        kdtree_simd_accuracies.append(kdtree_simd_acc)
+        brute_scalar_accuracies.append(brute_scalar_acc)
+        brute_simd_accuracies.append(brute_simd_acc)
 
     print("\n\nExperiments complete. Saving results to CSV...")
 
     # Write results to CSV
     with open("benchmark_results.csv", "w") as f:
-        f.write("run,kdtree_time,brute_time,speedup,kdtree_accuracy,brute_accuracy\n")
+        f.write("run,kdtree_scalar_time,kdtree_simd_time,brute_scalar_time,brute_simd_time,kdtree_scalar_accuracy,kdtree_simd_accuracy,brute_scalar_accuracy,brute_simd_accuracy\n")
         for i in range(NUM_RUNS):
-            var speedup = brute_times[i] / kdtree_times[i]
-            var line = str(i + 1) + "," + str(kdtree_times[i]) + "," + str(brute_times[i]) + "," + str(speedup) + "," + str(kdtree_accuracies[i]) + "," + str(brute_accuracies[i]) + "\n"
+            var line = (
+                str(i + 1) + ","
+                + str(kdtree_scalar_times[i]) + ","
+                + str(kdtree_simd_times[i]) + ","
+                + str(brute_scalar_times[i]) + ","
+                + str(brute_simd_times[i]) + ","
+                + str(kdtree_scalar_accuracies[i]) + ","
+                + str(kdtree_simd_accuracies[i]) + ","
+                + str(brute_scalar_accuracies[i]) + ","
+                + str(brute_simd_accuracies[i]) + "\n"
+            )
             f.write(line)
 
     print("Results saved to benchmark_results.csv")
 
     # Print summary statistics
-    var kdtree_mean: Float64 = 0.0
-    var brute_mean: Float64 = 0.0
+    var kdtree_scalar_mean: Float64 = 0.0
+    var kdtree_simd_mean:   Float64 = 0.0
+    var brute_scalar_mean:  Float64 = 0.0
+    var brute_simd_mean:    Float64 = 0.0
     for i in range(NUM_RUNS):
-        kdtree_mean += kdtree_times[i]
-        brute_mean += brute_times[i]
-    kdtree_mean /= Float64(NUM_RUNS)
-    brute_mean /= Float64(NUM_RUNS)
+        kdtree_scalar_mean += kdtree_scalar_times[i]
+        kdtree_simd_mean   += kdtree_simd_times[i]
+        brute_scalar_mean  += brute_scalar_times[i]
+        brute_simd_mean    += brute_simd_times[i]
+    kdtree_scalar_mean /= Float64(NUM_RUNS)
+    kdtree_simd_mean   /= Float64(NUM_RUNS)
+    brute_scalar_mean  /= Float64(NUM_RUNS)
+    brute_simd_mean    /= Float64(NUM_RUNS)
 
     print("\n" + "=" * 60)
     print("SUMMARY (", NUM_RUNS, "runs)")
     print("=" * 60)
-    print("K-D Tree mean time:    ", kdtree_mean, "s")
-    print("Brute Force mean time: ", brute_mean, "s")
-    print("Mean speedup:          ", brute_mean / kdtree_mean, "x")
+    print("K-D Tree scalar mean:     ", kdtree_scalar_mean, "s")
+    print("K-D Tree SIMD mean:       ", kdtree_simd_mean,   "s")
+    print("Brute Force scalar mean:  ", brute_scalar_mean,  "s")
+    print("Brute Force SIMD mean:    ", brute_simd_mean,    "s")
+    print("KD-Tree SIMD speedup:     ", kdtree_scalar_mean / kdtree_simd_mean, "x")
+    print("Brute Force SIMD speedup: ", brute_scalar_mean  / brute_simd_mean,  "x")
     print("\nRun the analysis notebook for detailed statistics:")
     print("  jupyter notebook benchmark_analysis.ipynb")
