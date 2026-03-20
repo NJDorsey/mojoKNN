@@ -328,8 +328,14 @@ Phase 5 (Verify brute force vs Kolli)  <- Independent, investigative
 ```
 
 ## Verification Checklist
-- [ ] After Phase 1: single benchmark run shows time decrease, accuracy unchanged
-- [ ] After Phase 2: accuracy matches pre-refactor (~48.158%), times improve
-- [ ] After Phase 2: tree depth is shallower (log2(162868/30) ≈ 12 vs log2(162868) ≈ 17)
+- [✔] After Phase 1: single benchmark run shows time decrease, accuracy unchanged
+- [✔] After Phase 2: accuracy matches pre-refactor (~48.158%), times improve
+- [✔] After Phase 2: tree depth is shallower (log2(162868/30) ≈ 12 vs log2(162868) ≈ 17)
 - [ ] After Phase 3: sklearn accuracies are consistent across 30 runs
 - [ ] Final: full 30-run benchmark with all variants, statistical analysis confirms results
+
+### Additional changes made:
+- Test size decreased significantly
+    - Will reevaluate and change test size -- looking for largest test size without memory issue to demonstrate speedup
+- Feature set trimmed from 22 &rarr; ~18 (TBD)
+- 12x fewer tree nodes due to using leaves

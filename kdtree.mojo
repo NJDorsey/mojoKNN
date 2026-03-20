@@ -1,7 +1,9 @@
 """K-D Tree implementation for fast k-nearest neighbor search.
 
 This module provides an efficient k-d tree data structure optimized for
-k-nearest neighbor queries in high-dimensional spaces.
+k-nearest neighbor queries in high-dimensional spaces. Uses a contiguous
+coordinate buffer for cache-friendly access and SIMD-vectorized distance
+computation. Supports a leaf_size parameter to reduce tree depth.
 """
 
 from collections import List
@@ -16,22 +18,26 @@ alias KD_SIMD_W = simdwidthof[KDFloat]()
 
 @value
 struct Point:
-    """A point in d-dimensional space."""
+    """A point in d-dimensional space. Used as input to KDTree construction."""
     var coords: List[KDFloat]
-    var original_index: Int  # Track original position in dataset
+    var original_index: Int
 
     fn __init__(inout self, coords: List[KDFloat], original_index: Int = -1):
-        """Initialize a point from a list of coordinates."""
         self.coords = coords
         self.original_index = original_index
 
     fn __getitem__(self, idx: Int) -> KDFloat:
-        """Get coordinate at index."""
         return self.coords[idx]
 
     fn __len__(self) -> Int:
-        """Get dimensionality."""
         return len(self.coords)
+
+
+@value
+struct PointRef:
+    """Lightweight reference to a point in the contiguous coordinate buffer."""
+    var buffer_index: Int
+    var original_index: Int
 
 
 @value
@@ -41,11 +47,9 @@ struct Neighbor:
     var distance: KDFloat
 
     fn __lt__(self, other: Neighbor) -> Bool:
-        """Less than comparison for sorting."""
         return self.distance < other.distance
 
     fn __gt__(self, other: Neighbor) -> Bool:
-        """Greater than comparison."""
         return self.distance > other.distance
 
 
@@ -59,42 +63,33 @@ struct MaxHeap:
     var capacity: Int
 
     fn __init__(inout self, capacity: Int):
-        """Initialize heap with given capacity (k for k-NN)."""
         self.data = List[Neighbor]()
         self.capacity = capacity
 
     fn __len__(self) -> Int:
-        """Get current size."""
         return len(self.data)
 
     fn is_full(self) -> Bool:
-        """Check if heap is at capacity."""
         return len(self.data) >= self.capacity
 
     fn max_distance(self) -> KDFloat:
-        """Get the maximum distance in the heap (root of max-heap)."""
         if len(self.data) == 0:
             return KDFloat.MAX
         return self.data[0].distance
 
     fn push(inout self, neighbor: Neighbor):
-        """Add a neighbor to the heap."""
         if not self.is_full():
-            # Just add and bubble up
             self.data.append(neighbor)
             self._bubble_up(len(self.data) - 1)
         elif neighbor.distance < self.data[0].distance:
-            # Replace the max (worst) with this better neighbor
             self.data[0] = neighbor
             self._bubble_down(0)
 
     fn _bubble_up(inout self, idx: Int):
-        """Restore heap property upward."""
         var current = idx
         while current > 0:
             var parent = (current - 1) // 2
             if self.data[current].distance > self.data[parent].distance:
-                # Swap using temporary copies to avoid aliasing
                 var temp_current_idx = self.data[current].index
                 var temp_current_dist = self.data[current].distance
                 var temp_parent_idx = self.data[parent].index
@@ -106,7 +101,6 @@ struct MaxHeap:
                 break
 
     fn _bubble_down(inout self, idx: Int):
-        """Restore heap property downward."""
         var current = idx
         var size = len(self.data)
 
@@ -121,7 +115,6 @@ struct MaxHeap:
                 largest = right
 
             if largest != current:
-                # Swap using temporary copies to avoid aliasing
                 var temp_current_idx = self.data[current].index
                 var temp_current_dist = self.data[current].distance
                 var temp_largest_idx = self.data[largest].index
@@ -136,17 +129,15 @@ struct MaxHeap:
         """Extract all neighbors sorted by distance (ascending)."""
         var result = List[Neighbor]()
 
-        # Copy data
         for i in range(len(self.data)):
             result.append(Neighbor(self.data[i].index, self.data[i].distance))
 
-        # Simple insertion sort (k is typically small)
+        # Insertion sort (k is typically small)
         for i in range(1, len(result)):
             var key_idx = result[i].index
             var key_dist = result[i].distance
             var j = i - 1
             while j >= 0 and result[j].distance > key_dist:
-                # Copy to avoid aliasing
                 var prev_idx = result[j].index
                 var prev_dist = result[j].distance
                 result[j + 1] = Neighbor(prev_idx, prev_dist)
@@ -156,102 +147,116 @@ struct MaxHeap:
         return result
 
 
-@always_inline
-fn euclidean_distance_squared(p1: Point, p2: Point) -> KDFloat:
-    """Calculate squared Euclidean distance between two points.
-
-    We use squared distance to avoid sqrt operations during search.
-    Only compute actual distance when needed for final results.
-    """
-    var sum_sq: KDFloat = 0.0
-    var dims = len(p1)
-
-    for i in range(dims):
-        var diff = p1[i] - p2[i]
-        sum_sq += diff * diff
-
-    return sum_sq
-
-
-@always_inline
-fn euclidean_distance_squared_simd(p1: Point, p2: Point) -> KDFloat:
-    """SIMD-vectorized squared Euclidean distance between two points.
-
-    Uses List.unsafe_ptr() to get a contiguous pointer to coords data,
-    then processes KD_SIMD_W floats at a time with SIMD load + reduce_add.
-    Falls back to scalar for the tail (dims % KD_SIMD_W remainder).
-    """
-    var dims = len(p1)
-    var p1_ptr = p1.coords.unsafe_ptr()
-    var p2_ptr = p2.coords.unsafe_ptr()
-    var sum_sq: KDFloat = 0.0
-    var k = 0
-    while k + KD_SIMD_W <= dims:
-        var diff = p1_ptr.load[width=KD_SIMD_W](k) - p2_ptr.load[width=KD_SIMD_W](k)
-        sum_sq += (diff * diff).reduce_add()
-        k += KD_SIMD_W
-    while k < dims:
-        var diff = p1_ptr[k] - p2_ptr[k]
-        sum_sq += diff * diff
-        k += 1
-    return sum_sq
-
-
-@always_inline
-fn euclidean_distance(p1: Point, p2: Point) -> KDFloat:
-    """Calculate Euclidean distance between two points."""
-    return sqrt(euclidean_distance_squared(p1, p2))
-
-
-@value
 struct KDNode:
-    """A node in the k-d tree."""
-    var point: Point
-    var axis: Int  # Which dimension this node splits on
+    """A node in the k-d tree. Internal nodes split on an axis; leaf nodes
+    store a flat array of PointRefs for brute-force scanning."""
+    var axis: Int                               # Split axis (-1 for leaf)
+    var split_value: KDFloat                    # Split value for internal nodes
+    var point_ref: PointRef                     # The median point at this internal node
     var left: UnsafePointer[KDNode]
     var right: UnsafePointer[KDNode]
+    var leaf_indices: UnsafePointer[PointRef]   # Flat array of PointRefs in leaf
+    var leaf_count: Int                         # Number of points (0 for internal)
 
-    fn __init__(inout self, owned point: Point, axis: Int):
-        """Create a new k-d tree node."""
-        self.point = point
+    fn __init__(inout self, axis: Int, split_value: KDFloat, point_ref: PointRef,
+                left: UnsafePointer[KDNode], right: UnsafePointer[KDNode],
+                leaf_indices: UnsafePointer[PointRef], leaf_count: Int):
         self.axis = axis
-        self.left = UnsafePointer[KDNode]()
-        self.right = UnsafePointer[KDNode]()
+        self.split_value = split_value
+        self.point_ref = point_ref
+        self.left = left
+        self.right = right
+        self.leaf_indices = leaf_indices
+        self.leaf_count = leaf_count
 
-    fn has_left(self) -> Bool:
-        """Check if left child exists."""
-        return self.left.__bool__()
+    fn __copyinit__(inout self, existing: Self):
+        self.axis = existing.axis
+        self.split_value = existing.split_value
+        self.point_ref = existing.point_ref
+        self.left = existing.left
+        self.right = existing.right
+        self.leaf_indices = existing.leaf_indices
+        self.leaf_count = existing.leaf_count
 
-    fn has_right(self) -> Bool:
-        """Check if right child exists."""
-        return self.right.__bool__()
+    fn __moveinit__(inout self, owned existing: Self):
+        self.axis = existing.axis
+        self.split_value = existing.split_value
+        self.point_ref = existing.point_ref
+        self.left = existing.left
+        self.right = existing.right
+        self.leaf_indices = existing.leaf_indices
+        self.leaf_count = existing.leaf_count
 
 
-struct KDTree[use_simd: Bool = False]:
-    """A k-d tree for efficient nearest neighbor search."""
+struct KDTree:
+    """A k-d tree for efficient nearest neighbor search.
+
+    Uses a contiguous coordinate buffer for cache-friendly memory access
+    and SIMD-vectorized distance computation. Supports a leaf_size parameter
+    (default 30, matching sklearn) to reduce tree depth and improve query
+    performance by brute-force scanning at leaf nodes.
+    """
     var root: UnsafePointer[KDNode]
     var num_dimensions: Int
     var size: Int
-    var points: List[Point]  # Store reference to points for search
+    var coord_buffer: UnsafePointer[KDFloat]
+    var original_indices: UnsafePointer[Int]
+    var leaf_size: Int
 
-    fn __init__(inout self, owned points: List[Point]):
-        """Build a k-d tree from a list of points."""
+    fn __init__(inout self, owned points: List[Point], leaf_size: Int = 30):
+        """Build a k-d tree from a list of points.
+
+        Copies point data into a contiguous buffer for cache-friendly access,
+        then builds the tree recursively with the given leaf_size.
+        """
         self.size = len(points)
         self.root = UnsafePointer[KDNode]()
-        self.points = points^
+        self.leaf_size = leaf_size
 
         if self.size == 0:
             self.num_dimensions = 0
+            self.coord_buffer = UnsafePointer[KDFloat]()
+            self.original_indices = UnsafePointer[Int]()
             return
 
-        self.num_dimensions = len(self.points[0])
+        self.num_dimensions = len(points[0])
 
-        # Create list of indices to sort
+        # Copy from List[Point] into contiguous row-major buffer
+        self.coord_buffer = UnsafePointer[KDFloat].alloc(self.size * self.num_dimensions)
+        self.original_indices = UnsafePointer[Int].alloc(self.size)
+        for i in range(self.size):
+            self.original_indices[i] = points[i].original_index
+            for j in range(self.num_dimensions):
+                self.coord_buffer[i * self.num_dimensions + j] = points[i].coords[j]
+
+        # Build tree from buffer indices
         var indices = List[Int]()
-        for i in range(len(self.points)):
+        for i in range(self.size):
             indices.append(i)
 
         self.root = self._build_recursive(indices, 0)
+
+    @always_inline
+    fn get_coord(self, buffer_index: Int, dim: Int) -> KDFloat:
+        return self.coord_buffer[buffer_index * self.num_dimensions + dim]
+
+    @always_inline
+    fn distance_squared_to_buffer_point(
+        self, query_ptr: UnsafePointer[KDFloat], buffer_index: Int
+    ) -> KDFloat:
+        """SIMD-vectorized squared Euclidean distance from query to a buffer point."""
+        var point_ptr = self.coord_buffer + buffer_index * self.num_dimensions
+        var sum_sq: KDFloat = 0.0
+        var k = 0
+        while k + KD_SIMD_W <= self.num_dimensions:
+            var diff = query_ptr.load[width=KD_SIMD_W](k) - point_ptr.load[width=KD_SIMD_W](k)
+            sum_sq += (diff * diff).reduce_add()
+            k += KD_SIMD_W
+        while k < self.num_dimensions:
+            var diff = query_ptr[k] - point_ptr[k]
+            sum_sq += diff * diff
+            k += 1
+        return sum_sq
 
     fn _build_recursive(
         inout self,
@@ -262,21 +267,36 @@ struct KDTree[use_simd: Bool = False]:
         if len(indices) == 0:
             return UnsafePointer[KDNode]()
 
-        var axis = depth % self.num_dimensions
+        # LEAF NODE: brute-force scan at query time
+        if len(indices) <= self.leaf_size:
+            var leaf_refs = UnsafePointer[PointRef].alloc(len(indices))
+            for i in range(len(indices)):
+                var buf_idx = indices[i]
+                leaf_refs[i] = PointRef(buf_idx, self.original_indices[buf_idx])
+            var node_ptr = UnsafePointer[KDNode].alloc(1)
+            node_ptr.init_pointee_move(KDNode(
+                axis=-1, split_value=0.0, point_ref=PointRef(0, 0),
+                left=UnsafePointer[KDNode](), right=UnsafePointer[KDNode](),
+                leaf_indices=leaf_refs, leaf_count=len(indices)
+            ))
+            return node_ptr
 
-        # Sort indices by the current axis coordinate
+        # INTERNAL NODE
+        var axis = depth % self.num_dimensions
         self._sort_by_axis(indices, axis)
 
-        # Find median
         var median_pos = len(indices) // 2
-        var median_idx = indices[median_pos]
+        var median_buf_idx = indices[median_pos]
 
-        # Create node with a copy of the point
         var node_ptr = UnsafePointer[KDNode].alloc(1)
-        var point_copy = Point(self.points[median_idx].coords, self.points[median_idx].original_index)
-        node_ptr.init_pointee_move(KDNode(point_copy^, axis))
+        node_ptr.init_pointee_move(KDNode(
+            axis=axis,
+            split_value=self.get_coord(median_buf_idx, axis),
+            point_ref=PointRef(median_buf_idx, self.original_indices[median_buf_idx]),
+            left=UnsafePointer[KDNode](), right=UnsafePointer[KDNode](),
+            leaf_indices=UnsafePointer[PointRef](), leaf_count=0
+        ))
 
-        # Split indices for left and right subtrees
         var left_indices = List[Int]()
         var right_indices = List[Int]()
 
@@ -286,7 +306,6 @@ struct KDTree[use_simd: Bool = False]:
         for i in range(median_pos + 1, len(indices)):
             right_indices.append(indices[i])
 
-        # Recursively build subtrees
         node_ptr[].left = self._build_recursive(left_indices^, depth + 1)
         node_ptr[].right = self._build_recursive(right_indices^, depth + 1)
 
@@ -296,78 +315,28 @@ struct KDTree[use_simd: Bool = False]:
         """Sort indices by coordinate value on given axis (insertion sort)."""
         for i in range(1, len(indices)):
             var key_idx = indices[i]
-            var key_val = self.points[key_idx][axis]
+            var key_val = self.get_coord(key_idx, axis)
             var j = i - 1
 
-            while j >= 0 and self.points[indices[j]][axis] > key_val:
+            while j >= 0 and self.get_coord(indices[j], axis) > key_val:
                 indices[j + 1] = indices[j]
                 j -= 1
 
             indices[j + 1] = key_idx
 
-    fn nearest_neighbor(self, query: Point) -> Neighbor:
-        """Find the nearest neighbor to the query point."""
-        var best = Neighbor(-1, KDFloat.MAX)
-        self._nn_search(self.root, query, best)
-        # Convert squared distance to actual distance
-        best.distance = sqrt(best.distance)
-        return best
-
-    fn _nn_search(
-        self,
-        node_ptr: UnsafePointer[KDNode],
-        query: Point,
-        inout best: Neighbor,
-    ):
-        """Recursive nearest neighbor search with pruning."""
-        if not node_ptr:
-            return
-
-        var node = node_ptr[]
-        var dist_sq: KDFloat = 0.0
-        @parameter
-        if use_simd:
-            dist_sq = euclidean_distance_squared_simd(query, node.point)
-        else:
-            dist_sq = euclidean_distance_squared(query, node.point)
-
-        # Update best if this node is closer
-        if dist_sq < best.distance:
-            best = Neighbor(node.point.original_index, dist_sq)
-
-        # Determine which subtree to search first
-        var axis = node.axis
-        var diff = query[axis] - node.point[axis]
-        var diff_sq = diff * diff
-
-        var first: UnsafePointer[KDNode]
-        var second: UnsafePointer[KDNode]
-
-        if diff < 0:
-            first = node.left
-            second = node.right
-        else:
-            first = node.right
-            second = node.left
-
-        # Search the closer subtree first
-        self._nn_search(first, query, best)
-
-        # Only search the other subtree if the splitting plane is closer
-        # than the current best distance (pruning!)
-        if diff_sq < best.distance:
-            self._nn_search(second, query, best)
-
-    fn k_nearest_neighbors(self, query: Point, k: Int) -> List[Neighbor]:
+    fn k_nearest_neighbors(self, query_ptr: UnsafePointer[KDFloat], k: Int) -> List[Neighbor]:
         """Find the k nearest neighbors to the query point.
 
-        Uses a max-heap to efficiently maintain the k best candidates.
-        Returns neighbors sorted by distance (ascending).
+        Args:
+            query_ptr: Pointer to the query point's feature data (length = num_dimensions).
+            k: Number of nearest neighbors to find.
+
+        Returns:
+            List of Neighbor structs sorted by distance (ascending).
         """
         var heap = MaxHeap(k)
-        self._knn_search(self.root, query, heap)
+        self._knn_search(self.root, query_ptr, heap)
 
-        # Convert squared distances to actual distances
         var result = heap.to_sorted_list()
         for i in range(len(result)):
             result[i].distance = sqrt(result[i].distance)
@@ -377,7 +346,7 @@ struct KDTree[use_simd: Bool = False]:
     fn _knn_search(
         self,
         node_ptr: UnsafePointer[KDNode],
-        query: Point,
+        query_ptr: UnsafePointer[KDFloat],
         inout heap: MaxHeap,
     ):
         """Recursive k-nearest neighbor search with pruning."""
@@ -385,19 +354,20 @@ struct KDTree[use_simd: Bool = False]:
             return
 
         var node = node_ptr[]
-        var dist_sq: KDFloat = 0.0
-        @parameter
-        if use_simd:
-            dist_sq = euclidean_distance_squared_simd(query, node.point)
-        else:
-            dist_sq = euclidean_distance_squared(query, node.point)
 
-        # Add to heap (heap handles capacity logic)
-        heap.push(Neighbor(node.point.original_index, dist_sq))
+        # LEAF: brute-force scan all points in the leaf
+        if node.leaf_count > 0:
+            for i in range(node.leaf_count):
+                var pt_ref = node.leaf_indices[i]
+                var dist_sq = self.distance_squared_to_buffer_point(query_ptr, pt_ref.buffer_index)
+                heap.push(Neighbor(pt_ref.original_index, dist_sq))
+            return
 
-        # Determine which subtree to search first
-        var axis = node.axis
-        var diff = query[axis] - node.point[axis]
+        # INTERNAL: check this node's point
+        var dist_sq = self.distance_squared_to_buffer_point(query_ptr, node.point_ref.buffer_index)
+        heap.push(Neighbor(node.point_ref.original_index, dist_sq))
+
+        var diff = query_ptr[node.axis] - node.split_value
         var diff_sq = diff * diff
 
         var first: UnsafePointer[KDNode]
@@ -411,20 +381,70 @@ struct KDTree[use_simd: Bool = False]:
             second = node.left
 
         # Search the closer subtree first
-        self._knn_search(first, query, heap)
+        self._knn_search(first, query_ptr, heap)
 
         # Only search the other subtree if:
         # 1. We don't have k neighbors yet, OR
         # 2. The splitting plane is closer than our worst (farthest) neighbor
         if not heap.is_full() or diff_sq < heap.max_distance():
-            self._knn_search(second, query, heap)
+            self._knn_search(second, query_ptr, heap)
+
+    fn nearest_neighbor(self, query_ptr: UnsafePointer[KDFloat]) -> Neighbor:
+        """Find the single nearest neighbor to the query point."""
+        var best = Neighbor(-1, KDFloat.MAX)
+        self._nn_search(self.root, query_ptr, best)
+        best.distance = sqrt(best.distance)
+        return best
+
+    fn _nn_search(
+        self,
+        node_ptr: UnsafePointer[KDNode],
+        query_ptr: UnsafePointer[KDFloat],
+        inout best: Neighbor,
+    ):
+        """Recursive nearest neighbor search with pruning."""
+        if not node_ptr:
+            return
+
+        var node = node_ptr[]
+
+        # LEAF: brute-force scan
+        if node.leaf_count > 0:
+            for i in range(node.leaf_count):
+                var pt_ref = node.leaf_indices[i]
+                var dist_sq = self.distance_squared_to_buffer_point(query_ptr, pt_ref.buffer_index)
+                if dist_sq < best.distance:
+                    best = Neighbor(pt_ref.original_index, dist_sq)
+            return
+
+        # INTERNAL
+        var dist_sq = self.distance_squared_to_buffer_point(query_ptr, node.point_ref.buffer_index)
+        if dist_sq < best.distance:
+            best = Neighbor(node.point_ref.original_index, dist_sq)
+
+        var diff = query_ptr[node.axis] - node.split_value
+        var diff_sq = diff * diff
+
+        var first: UnsafePointer[KDNode]
+        var second: UnsafePointer[KDNode]
+
+        if diff < 0:
+            first = node.left
+            second = node.right
+        else:
+            first = node.right
+            second = node.left
+
+        self._nn_search(first, query_ptr, best)
+
+        if diff_sq < best.distance:
+            self._nn_search(second, query_ptr, best)
 
     fn get_depth(self) -> Int:
         """Get the maximum depth of the tree."""
         return self._get_depth_recursive(self.root)
 
     fn _get_depth_recursive(self, node_ptr: UnsafePointer[KDNode]) -> Int:
-        """Recursively compute tree depth."""
         if not node_ptr:
             return 0
         var left_depth = self._get_depth_recursive(node_ptr[].left)
@@ -438,7 +458,6 @@ struct KDTree[use_simd: Bool = False]:
         return self._count_recursive(self.root)
 
     fn _count_recursive(self, node_ptr: UnsafePointer[KDNode]) -> Int:
-        """Recursively count nodes."""
         if not node_ptr:
             return 0
         return (
