@@ -339,3 +339,36 @@ Phase 5 (Verify brute force vs Kolli)  <- Independent, investigative
     - Will reevaluate and change test size -- looking for largest test size without memory issue to demonstrate speedup
 - Feature set trimmed from 22 &rarr; ~18 (TBD)
 - 12x fewer tree nodes due to using leaves
+
+---
+
+## Future Optimizations Catalog (03/26/2026)
+
+### 1. Variance-Based Axis Selection (Implementing Now)
+- **What:** Replace round-robin axis selection (`depth % num_dimensions`) with spread-based selection — at each internal node, pick the axis with the largest (max − min) range across the points being split.
+- **Optimizes:** Query time (better pruning reduces nodes visited).
+- **Why it helps:** Round-robin wastes splits on low-variance dimensions where points are tightly clustered, producing lopsided partitions that fail to prune during search. Spread-based selection (what sklearn uses) ensures each split maximally separates points, improving the tree's ability to discard far-away subtrees.
+- **Build cost:** O(n × d) per internal node to scan for spread. Build is already O(n × d × log n) for sorting, so no asymptotic change. Build may be slightly slower; query time should improve significantly.
+- **Complexity:** Low — one new method + one line change in `_build_recursive`.
+- **Priority:** Immediate.
+
+### 2. Leaf Node Batch SIMD Distance
+- **What:** When scanning leaf nodes, compute distances to all `leaf_size` points in a single SIMD-friendly loop over contiguous memory, rather than calling `distance_squared_to_buffer_point` per point.
+- **Optimizes:** Query time at leaf nodes (the innermost hot loop).
+- **Why it helps:** Leaf nodes already store contiguous `PointRef` arrays. Batching the distance computation allows the CPU to prefetch and pipeline memory loads across multiple points, reducing cache miss stalls. With `leaf_size=30` and 8-wide SIMD, this could process ~4 points per vector iteration.
+- **Complexity:** Medium — requires restructuring the leaf scan loop and handling remainder points.
+- **Priority:** High (after variance-based axis selection).
+
+### 3. Van Emde Boas / Flat-Array Tree Layout
+- **What:** Store all KDNode data in a single pre-allocated array using breadth-first (Van Emde Boas) ordering instead of pointer-linked nodes. Children of node at index `i` are at `2i+1` and `2i+2`.
+- **Optimizes:** Tree traversal latency (cache line utilization during descent).
+- **Why it helps:** Pointer-chasing through heap-allocated nodes causes cache misses on every level of the tree. A flat array with BFS layout ensures parent and children nodes are on the same or adjacent cache lines. sklearn uses this layout.
+- **Complexity:** High — requires rethinking node storage, build order, and how leaf nodes are represented. May need a separate leaf data array.
+- **Priority:** Medium (significant refactor, but large potential gain for deep trees).
+
+### 4. Manhattan Distance (L1)
+- **What:** Add support for L1 (Manhattan / city-block) distance as an alternative to L2 (Euclidean).
+- **Optimizes:** Distance computation cost per pair (no squaring or square root needed).
+- **Why it helps:** L1 distance is cheaper to compute (just absolute differences), and for some datasets (especially high-dimensional ones), L1 can produce comparable or better classification accuracy. It also simplifies the pruning criterion: the hyperplane distance is `|query[axis] - split_value|` directly (no squaring needed).
+- **Complexity:** Low — add a compile-time `metric` parameter to `KDTree`, branch distance computation accordingly. Pruning logic needs minor adjustment.
+- **Priority:** Low (nice-to-have; L2 is the standard for KNN benchmarks).

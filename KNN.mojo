@@ -37,7 +37,7 @@ fn get_simd_width() -> Int:
 struct Matrix[rows: Int, cols: Int]:
     var data: UnsafePointer[T]
 
-    # Initialize zeroing all values
+    # Initialize zeroing all values1
     fn __init__(out self):
         self.data = UnsafePointer[T].alloc(rows * cols)
         memset_zero(self.data, rows * cols)

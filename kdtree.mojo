@@ -258,6 +258,31 @@ struct KDTree:
             k += 1
         return sum_sq
 
+    fn _find_best_axis(self, indices: List[Int]) -> Int:
+        """Find the axis with the largest spread (max - min) across the given points.
+
+        This is cheaper than true variance (no mean/squares) and matches
+        sklearn's KDTree axis selection strategy.
+        """
+        var best_axis = 0
+        var best_spread: KDFloat = -1.0
+
+        for d in range(self.num_dimensions):
+            var lo = self.get_coord(indices[0], d)
+            var hi = lo
+            for i in range(1, len(indices)):
+                var val = self.get_coord(indices[i], d)
+                if val < lo:
+                    lo = val
+                if val > hi:
+                    hi = val
+            var spread = hi - lo
+            if spread > best_spread:
+                best_spread = spread
+                best_axis = d
+
+        return best_axis
+
     fn _build_recursive(
         inout self,
         owned indices: List[Int],
@@ -281,8 +306,8 @@ struct KDTree:
             ))
             return node_ptr
 
-        # INTERNAL NODE
-        var axis = depth % self.num_dimensions
+        # INTERNAL NODE — split on axis with largest spread
+        var axis = self._find_best_axis(indices)
         self._sort_by_axis(indices, axis)
 
         var median_pos = len(indices) // 2
