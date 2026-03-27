@@ -24,10 +24,10 @@ name          = "aapl_100"
 features_path = "HFTData/AAPL_LONG_features_causal.csv"
 labels_path   = "HFTData/AAPL_LONG_target_causal.csv"
 n_rows        = 100
-n_features    = 22
+n_features    = 16
 train_split   = 0.8
 k             = 5
-num_runs      = 30
+num_runs      = 10
 group         = "aapl_scaling"
 
 [[datasets]]
@@ -35,10 +35,10 @@ name          = "aapl_1k"
 features_path = "HFTData/AAPL_LONG_features_causal.csv"
 labels_path   = "HFTData/AAPL_LONG_target_causal.csv"
 n_rows        = 1000
-n_features    = 22
+n_features    = 16
 train_split   = 0.8
-k             = 5
-num_runs      = 20
+k             = 10
+num_runs      = 10
 group         = "aapl_scaling"
 
 [[datasets]]
@@ -46,9 +46,9 @@ name          = "aapl_10k"
 features_path = "HFTData/AAPL_LONG_features_causal.csv"
 labels_path   = "HFTData/AAPL_LONG_target_causal.csv"
 n_rows        = 10000
-n_features    = 22
+n_features    = 16
 train_split   = 0.8
-k             = 5
+k             = 100
 num_runs      = 10
 group         = "aapl_scaling"
 
@@ -57,22 +57,22 @@ name          = "aapl_100k"
 features_path = "HFTData/AAPL_LONG_features_causal.csv"
 labels_path   = "HFTData/AAPL_LONG_target_causal.csv"
 n_rows        = 100000
-n_features    = 22
+n_features    = 16
 train_split   = 0.8
-k             = 5
-num_runs      = 5
+k             = 100
+num_runs      = 10
 group         = "aapl_scaling"
 
 [[datasets]]
-#name          = "aapl_full"
-#features_path = "HFTData/AAPL_LONG_features_causal.csv"
-#labels_path   = "HFTData/AAPL_LONG_target_causal.csv"
-#n_rows        = 203586
-#n_features    = 22
-#train_split   = 0.8
-#k             = 5
-#num_runs      = 3
-#ok group         = "aapl_scaling"
+name          = "aapl_full"
+features_path = "HFTData/AAPL_LONG_features_causal.csv"
+labels_path   = "HFTData/AAPL_LONG_target_causal.csv"
+n_rows        = 203586
+n_features    = 16
+train_split   = 0.8
+k             = 100
+num_runs      = 10
+group         = "aapl_scaling"
 
 # ---------------------------------------------------------------------------
 # Other datasets (different feature counts — useful for comparison but

@@ -128,6 +128,8 @@ fn main() raises:
                     heap.push(Neighbor(m, local_d[m, 0]))
                 pred_bf[i, 0] = predict_class_from_neighbors(trainingcls, heap.data)
             except: pass
+            local_x.data.free()
+            local_d.data.free()
 
         parallelize[origins = MutableAnyOrigin, func = do_bf](N_TEST)
         var bf_s = Float64(monotonic() - t0) / 1_000_000_000.0
@@ -137,6 +139,7 @@ fn main() raises:
             if pred_bf[i, 0] == testingcls[i, 0]: bf_ok += 1
         var bf_acc = Float64(bf_ok) / Float64(N_TEST) * 100.0
         print("RESULT,brute_simd," + str(run + 1) + "," + str(bf_s) + "," + str(bf_acc))
+        pred_bf.data.free()
 
         # --- KD-Tree SIMD ---
         var t1 = monotonic()
@@ -158,6 +161,7 @@ fn main() raises:
             if pred_kd[i, 0] == testingcls[i, 0]: kd_ok += 1
         var kd_acc = Float64(kd_ok) / Float64(N_TEST) * 100.0
         print("RESULT,kdtree_simd," + str(run + 1) + "," + str(kd_s) + "," + str(kd_acc))
+        pred_kd.data.free()
 """
 
 # Temp file names written to project root for Mojo to load
@@ -241,19 +245,23 @@ def cleanup_temp_files(project_root: str) -> None:
 def run_sklearn_baseline(ds: dict,
                          X_train: np.ndarray, X_test: np.ndarray,
                          y_train: np.ndarray, y_test: np.ndarray) -> list[dict]:
-    """Time sklearn brute-force KNN on the pre-split arrays."""
+    """Time sklearn brute-force and KD-tree KNN on the pre-split arrays."""
     results = []
     k = ds["k"]
-    print(f"    Running sklearn_brute — {ds['num_runs']} runs...")
-    clf = KNeighborsClassifier(n_neighbors=k, algorithm="brute", metric="euclidean")
-    clf.fit(X_train, y_train)
-    for run in range(ds["num_runs"]):
-        t0     = time.perf_counter()
-        y_pred = clf.predict(X_test)
-        elapsed = time.perf_counter() - t0
-        acc = float((y_pred == y_test).mean() * 100.0)
-        results.append({"algorithm": "sklearn_brute", "run": run + 1,
-                        "time_seconds": elapsed, "accuracy_pct": acc})
+
+    for algo, label in [("brute", "sklearn_brute"), ("kd_tree", "sklearn_kdtree")]:
+        print(f"    Running {label} — {ds['num_runs']} runs...")
+        clf = KNeighborsClassifier(n_neighbors=k, algorithm=algo,
+                                   metric="euclidean", leaf_size=30)
+        clf.fit(X_train, y_train)
+        for run in range(ds["num_runs"]):
+            t0     = time.perf_counter()
+            y_pred = clf.predict(X_test)
+            elapsed = time.perf_counter() - t0
+            acc = float((y_pred == y_test).mean() * 100.0)
+            results.append({"algorithm": label, "run": run + 1,
+                            "time_seconds": elapsed, "accuracy_pct": acc})
+
     return results
 
 
@@ -295,42 +303,25 @@ def parse_mojo_output(stdout: str) -> list[dict]:
 
 def run_mojo_experiment(ds: dict, n_train: int, n_test: int,
                         mojo_bin: str, project_root: str) -> list[dict]:
-    """Generate, compile, and run the Mojo experiment; return parsed results."""
+    """Generate and JIT-run the Mojo experiment; return parsed results."""
     tmp_mojo = os.path.join(project_root, "_exp_tmp.mojo")
-    tmp_bin  = os.path.join(project_root, "_exp_tmp")
 
     source = generate_mojo_source(ds, n_train, n_test)
     with open(tmp_mojo, "w") as f:
         f.write(source)
 
-    print(f"    Compiling Mojo binary...")
+    print(f"    Running Mojo (JIT) — {ds['num_runs']} runs...")
     try:
-        build = subprocess.run(
-            [mojo_bin, "build", "_exp_tmp.mojo", "-o", "_exp_tmp"],
-            cwd=project_root,
-            capture_output=True,
-            text=True,
-            timeout=600,
-        )
-        if build.returncode != 0:
-            print(f"    ERROR: mojo build exited with code {build.returncode}")
-            stderr_preview = build.stderr.strip()[:800]
-            if stderr_preview:
-                print(f"    stderr:\n{stderr_preview}")
-            return []
-
-        print(f"    Running benchmark ({ds['num_runs']} runs)...")
         result = subprocess.run(
-            [tmp_bin],
+            [mojo_bin, "run", "_exp_tmp.mojo"],
             cwd=project_root,
             capture_output=True,
             text=True,
             timeout=7200,
         )
     finally:
-        for p in [tmp_mojo, tmp_bin]:
-            if os.path.exists(p):
-                os.remove(p)
+        if os.path.exists(tmp_mojo):
+            os.remove(tmp_mojo)
 
     if result.returncode != 0:
         print(f"    ERROR: Mojo experiment exited with code {result.returncode}")
@@ -442,8 +433,10 @@ def main():
                     writer.writerow({**meta, **r})
                 csvfile.flush()
 
-                for algo in ["brute_simd", "kdtree_simd", "kdtree_build"]:
-                    runs = [r for r in mojo_results if r["algorithm"] == algo]
+                for algo in ["brute_simd", "kdtree_simd", "kdtree_build",
+                            "sklearn_kdtree"]:
+                    runs = [r for r in sk_results + mojo_results
+                            if r["algorithm"] == algo]
                     if not runs:
                         continue
                     times = [r["time_seconds"] for r in runs]
