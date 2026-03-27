@@ -1,0 +1,130 @@
+# mojoKNN Experiment Runner Config
+# Run with: python experiment_runner.py [config_file]
+#
+# n_rows    = number of rows to actually USE from the file (not necessarily the
+#             full file). Python loads only the first n_rows rows efficiently.
+# n_train   = floor(n_rows * train_split), n_test = n_rows - n_train
+# These are compiled into the Mojo binary as compile-time constants.
+#
+# group     = (optional) name for a scaling family. Datasets sharing a group
+#             are plotted together on the scaling chart in experiment_analysis.py.
+
+[runner]
+output_dir  = "results"    # where timestamped batch CSVs are written
+mojo_bin    = "mojo"       # path to mojo binary, or just "mojo" if it's on PATH
+
+# ---------------------------------------------------------------------------
+# AAPL scaling experiment: fixed 16 features, sweep over dataset size
+# Goal: show that Mojo speedup vs sklearn INCREASES with dataset size.
+# Subsets are the first n_rows rows of the file (preserves temporal order).
+# ---------------------------------------------------------------------------
+
+[[datasets]]
+name          = "aapl_100"
+features_path = "HFTData/AAPL_LONG_features_causal.csv"
+labels_path   = "HFTData/AAPL_LONG_target_causal.csv"
+n_rows        = 100
+n_features    = 22
+train_split   = 0.8
+k             = 5
+num_runs      = 30
+group         = "aapl_scaling"
+
+[[datasets]]
+name          = "aapl_1k"
+features_path = "HFTData/AAPL_LONG_features_causal.csv"
+labels_path   = "HFTData/AAPL_LONG_target_causal.csv"
+n_rows        = 1000
+n_features    = 22
+train_split   = 0.8
+k             = 5
+num_runs      = 20
+group         = "aapl_scaling"
+
+[[datasets]]
+name          = "aapl_10k"
+features_path = "HFTData/AAPL_LONG_features_causal.csv"
+labels_path   = "HFTData/AAPL_LONG_target_causal.csv"
+n_rows        = 10000
+n_features    = 22
+train_split   = 0.8
+k             = 5
+num_runs      = 10
+group         = "aapl_scaling"
+
+[[datasets]]
+name          = "aapl_100k"
+features_path = "HFTData/AAPL_LONG_features_causal.csv"
+labels_path   = "HFTData/AAPL_LONG_target_causal.csv"
+n_rows        = 100000
+n_features    = 22
+train_split   = 0.8
+k             = 5
+num_runs      = 5
+group         = "aapl_scaling"
+
+[[datasets]]
+#name          = "aapl_full"
+#features_path = "HFTData/AAPL_LONG_features_causal.csv"
+#labels_path   = "HFTData/AAPL_LONG_target_causal.csv"
+#n_rows        = 203586
+#n_features    = 22
+#train_split   = 0.8
+#k             = 5
+#num_runs      = 3
+#ok group         = "aapl_scaling"
+
+# ---------------------------------------------------------------------------
+# Other datasets (different feature counts — useful for comparison but
+# confound the pure scaling story). Uncomment to include.
+# ---------------------------------------------------------------------------
+
+# [[datasets]]
+# name          = "iris"
+# features_path = "data/iris.csv"
+# labels_path   = "data/irisClasses.csv"
+# n_rows        = 150
+# n_features    = 4
+# train_split   = 0.7
+# k             = 5
+# num_runs      = 10
+
+# [[datasets]]
+# name          = "wine"
+# features_path = "data/wine.csv"
+# labels_path   = "data/wineClasses.csv"
+# n_rows        = 178
+# n_features    = 13
+# train_split   = 0.8
+# k             = 5
+# num_runs      = 10
+
+# [[datasets]]
+# name          = "cancer"
+# features_path = "data/cancer.csv"
+# labels_path   = "data/cancerClasses.csv"
+# n_rows        = 569
+# n_features    = 30
+# train_split   = 0.8
+# k             = 5
+# num_runs      = 10
+
+# [[datasets]]
+# name          = "digits"
+# features_path = "data/digits.csv"
+# labels_path   = "data/digitsClasses.csv"
+# n_rows        = 1797
+# n_features    = 64
+# train_split   = 0.8
+# k             = 5
+# num_runs      = 5
+
+# [[datasets]]
+# name          = "mnist"
+# features_path = "data/mnist.csv"
+# labels_path   = "data/mnistclasses.csv"
+# n_rows        = 70000
+# n_features    = 784
+# train_split   = 0.7
+# k             = 5
+# num_runs      = 3
