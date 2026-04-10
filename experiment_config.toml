@@ -1,4 +1,4 @@
-# mojoKNN Experiment Runner Config
+# mojoKNN Experiment Runner Config — Full Benchmark Suite
 # Run with: python experiment_runner.py [config_file]
 #
 # n_rows    = number of rows to actually USE from the file (not necessarily the
@@ -8,123 +8,185 @@
 #
 # group     = (optional) name for a scaling family. Datasets sharing a group
 #             are plotted together on the scaling chart in experiment_analysis.py.
+#
+# Protocol: K=5 fixed (per original paper), 10 runs, 80/20 split.
+# Algorithms: sklearn_brute, sklearn_kdtree, brute_simd, kdtree_simd
 
 [runner]
 output_dir  = "results"    # where timestamped batch CSVs are written
 mojo_bin    = "mojo"       # path to mojo binary, or just "mojo" if it's on PATH
 
-# ---------------------------------------------------------------------------
-# AAPL scaling experiment: fixed 16 features, sweep over dataset size
-# Goal: show that Mojo speedup vs sklearn INCREASES with dataset size.
-# Subsets are the first n_rows rows of the file (preserves temporal order).
-# ---------------------------------------------------------------------------
+# ===========================================================================
+# Classic ML datasets
+# ===========================================================================
 
 [[datasets]]
-name          = "aapl_100"
-features_path = "HFTData/AAPL_LONG_features_causal.csv"
-labels_path   = "HFTData/AAPL_LONG_target_causal.csv"
-n_rows        = 100
-n_features    = 16
+name          = "iris"
+features_path = "data/iris.csv"
+labels_path   = "data/irisClasses.csv"
+n_rows        = 150
+n_features    = 4
 train_split   = 0.8
 k             = 5
 num_runs      = 10
-group         = "aapl_scaling"
+group         = "classic_ml"
 
 [[datasets]]
-name          = "aapl_1k"
-features_path = "HFTData/AAPL_LONG_features_causal.csv"
-labels_path   = "HFTData/AAPL_LONG_target_causal.csv"
-n_rows        = 1000
-n_features    = 16
+name          = "wine"
+features_path = "data/wine.csv"
+labels_path   = "data/wineClasses.csv"
+n_rows        = 178
+n_features    = 13
 train_split   = 0.8
-k             = 10
+k             = 5
 num_runs      = 10
-group         = "aapl_scaling"
+group         = "classic_ml"
 
 [[datasets]]
-name          = "aapl_10k"
-features_path = "HFTData/AAPL_LONG_features_causal.csv"
-labels_path   = "HFTData/AAPL_LONG_target_causal.csv"
-n_rows        = 10000
-n_features    = 16
+name          = "cancer"
+features_path = "data/cancer.csv"
+labels_path   = "data/cancerClasses.csv"
+n_rows        = 569
+n_features    = 30
 train_split   = 0.8
-k             = 100
+k             = 5
 num_runs      = 10
-group         = "aapl_scaling"
+group         = "classic_ml"
 
 [[datasets]]
-name          = "aapl_100k"
-features_path = "HFTData/AAPL_LONG_features_causal.csv"
-labels_path   = "HFTData/AAPL_LONG_target_causal.csv"
-n_rows        = 100000
-n_features    = 16
+name          = "digits"
+features_path = "data/digits.csv"
+labels_path   = "data/digitsClasses.csv"
+n_rows        = 1797
+n_features    = 64
 train_split   = 0.8
-k             = 100
+k             = 5
 num_runs      = 10
-group         = "aapl_scaling"
+group         = "classic_ml"
+
+# ===========================================================================
+# Image datasets (capped for compile-time feasibility)
+# ===========================================================================
 
 [[datasets]]
-name          = "aapl_full"
+name          = "mnist"
+features_path = "data/mnist.csv"
+labels_path   = "data/mnistclasses.csv"
+n_rows        = 10000        # capped from 70k — full dataset may OOM at compile time
+n_features    = 784
+train_split   = 0.8
+k             = 5
+num_runs      = 10
+group         = "image"
+
+[[datasets]]
+name          = "cifar10"
+features_path = "data/cifar.csv"
+labels_path   = "data/cifarClasses.csv"
+n_rows        = 10000        # capped from 60k — 3072 features per sample
+n_features    = 3072
+train_split   = 0.8
+k             = 5
+num_runs      = 10
+group         = "image"
+
+# ===========================================================================
+# Finance / HFT datasets (16 engineered features from 1-min OHLCV)
+# Run HFTData/download_and_engineer.py first to generate WMT/CPRI/JPM files.
+#
+# NOTE: Update n_rows for WMT, CPRI, JPM after running the download script.
+#       The script prints the exact row count for each ticker.
+#       Values below are estimates based on AAPL's ~203k rows.
+# ===========================================================================
+
+[[datasets]]
+name          = "aapl"
 features_path = "HFTData/AAPL_LONG_features_causal.csv"
 labels_path   = "HFTData/AAPL_LONG_target_causal.csv"
 n_rows        = 203586
 n_features    = 16
 train_split   = 0.8
-k             = 100
+k             = 5
 num_runs      = 10
-group         = "aapl_scaling"
+group         = "finance"
 
-# ---------------------------------------------------------------------------
-# Other datasets (different feature counts — useful for comparison but
-# confound the pure scaling story). Uncomment to include.
-# ---------------------------------------------------------------------------
+[[datasets]]
+name          = "wmt"
+features_path = "HFTData/WMT_LONG_features_causal.csv"
+labels_path   = "HFTData/WMT_LONG_target_causal.csv"
+n_rows        = 200000       # UPDATE after running download_and_engineer.py
+n_features    = 16
+train_split   = 0.8
+k             = 5
+num_runs      = 10
+group         = "finance"
+
+[[datasets]]
+name          = "cpri"
+features_path = "HFTData/CPRI_LONG_features_causal.csv"
+labels_path   = "HFTData/CPRI_LONG_target_causal.csv"
+n_rows        = 200000       # UPDATE after running download_and_engineer.py
+n_features    = 16
+train_split   = 0.8
+k             = 5
+num_runs      = 10
+group         = "finance"
+
+[[datasets]]
+name          = "jpm"
+features_path = "HFTData/JPM_LONG_features_causal.csv"
+labels_path   = "HFTData/JPM_LONG_target_causal.csv"
+n_rows        = 200000       # UPDATE after running download_and_engineer.py
+n_features    = 16
+train_split   = 0.8
+k             = 5
+num_runs      = 10
+group         = "finance"
+
+# ===========================================================================
+# AAPL scaling experiment (uncomment to re-run the scaling sweep)
+# ===========================================================================
 
 # [[datasets]]
-# name          = "iris"
-# features_path = "data/iris.csv"
-# labels_path   = "data/irisClasses.csv"
-# n_rows        = 150
-# n_features    = 4
-# train_split   = 0.7
-# k             = 5
-# num_runs      = 10
-
-# [[datasets]]
-# name          = "wine"
-# features_path = "data/wine.csv"
-# labels_path   = "data/wineClasses.csv"
-# n_rows        = 178
-# n_features    = 13
+# name          = "aapl_100"
+# features_path = "HFTData/AAPL_LONG_features_causal.csv"
+# labels_path   = "HFTData/AAPL_LONG_target_causal.csv"
+# n_rows        = 100
+# n_features    = 16
 # train_split   = 0.8
 # k             = 5
 # num_runs      = 10
+# group         = "aapl_scaling"
 
 # [[datasets]]
-# name          = "cancer"
-# features_path = "data/cancer.csv"
-# labels_path   = "data/cancerClasses.csv"
-# n_rows        = 569
-# n_features    = 30
+# name          = "aapl_1k"
+# features_path = "HFTData/AAPL_LONG_features_causal.csv"
+# labels_path   = "HFTData/AAPL_LONG_target_causal.csv"
+# n_rows        = 1000
+# n_features    = 16
 # train_split   = 0.8
 # k             = 5
 # num_runs      = 10
+# group         = "aapl_scaling"
 
 # [[datasets]]
-# name          = "digits"
-# features_path = "data/digits.csv"
-# labels_path   = "data/digitsClasses.csv"
-# n_rows        = 1797
-# n_features    = 64
+# name          = "aapl_10k"
+# features_path = "HFTData/AAPL_LONG_features_causal.csv"
+# labels_path   = "HFTData/AAPL_LONG_target_causal.csv"
+# n_rows        = 10000
+# n_features    = 16
 # train_split   = 0.8
 # k             = 5
-# num_runs      = 5
+# num_runs      = 10
+# group         = "aapl_scaling"
 
 # [[datasets]]
-# name          = "mnist"
-# features_path = "data/mnist.csv"
-# labels_path   = "data/mnistclasses.csv"
-# n_rows        = 70000
-# n_features    = 784
-# train_split   = 0.7
+# name          = "aapl_100k"
+# features_path = "HFTData/AAPL_LONG_features_causal.csv"
+# labels_path   = "HFTData/AAPL_LONG_target_causal.csv"
+# n_rows        = 100000
+# n_features    = 16
+# train_split   = 0.8
 # k             = 5
-# num_runs      = 3
+# num_runs      = 10
+# group         = "aapl_scaling"
