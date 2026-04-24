@@ -458,9 +458,13 @@ def plot_method_comparison(stats: pd.DataFrame, out_dir: str) -> None:
         if sub.empty:
             continue
 
-        xs = [algo_positions[a] for a in sub["algorithm"] if a in algo_positions]
-        ys = [sub[sub["algorithm"] == a]["mean_ms"].values[0]
-              for a in sub["algorithm"] if a in algo_positions]
+        # Build points in ALGO_ORDER so the line goes straight left-to-right
+        xs, ys = [], []
+        for a in ALGO_ORDER:
+            row = sub[sub["algorithm"] == a]
+            if not row.empty:
+                xs.append(algo_positions[a])
+                ys.append(row["mean_ms"].values[0])
 
         n_rows = sub["n_rows"].iloc[0]
         marker = markers[idx % len(markers)]

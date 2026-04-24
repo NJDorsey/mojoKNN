@@ -24,7 +24,7 @@ import pandas as pd
 # Config
 # ---------------------------------------------------------------------------
 
-TIINGO_API_KEY = "cb5f8ef1e686b37a79dd8b3a0878a1572aa63b43"
+POLYGON_API_KEY = "3A1zVCYg3tW3gCqGFpP_1KtMWJKNUjtB"
 START_DATE = "2024-02-13"
 END_DATE   = "2026-02-13"
 DEFAULT_TICKERS = ["WMT", "CPRI", "JPM"]   # AAPL already done
@@ -39,20 +39,51 @@ OUT_DIR = os.path.dirname(os.path.abspath(__file__))
 # ---------------------------------------------------------------------------
 
 def download_ticker(ticker: str) -> pd.DataFrame:
-    """Download 1-minute OHLCV data from Tiingo IEX endpoint."""
-    from tiingo import TiingoClient
-
-    config = {"api_key": TIINGO_API_KEY, "session": True}
-    client = TiingoClient(config)
+    """Download 1-minute OHLCV data from Polygon.io, auto-paginating via next_url."""
+    import requests
+    import time
 
     print(f"  Downloading {ticker} 1-min data ({START_DATE} to {END_DATE})...")
-    df = client.get_dataframe(
-        ticker=ticker,
-        startDate=START_DATE,
-        endDate=END_DATE,
-        frequency="1min",
-        fmt="json",
+
+    url = (
+        f"https://api.polygon.io/v2/aggs/ticker/{ticker}"
+        f"/range/1/minute/{START_DATE}/{END_DATE}"
+        f"?adjusted=true&sort=asc&limit=50000&apiKey={POLYGON_API_KEY}"
     )
+
+    all_bars = []
+    page = 1
+    while url:
+        resp = requests.get(url)
+        if resp.status_code == 429:
+            print("    Rate limited, waiting 15s...")
+            time.sleep(15)
+            continue
+        resp.raise_for_status()
+        data = resp.json()
+
+        bars = data.get("results", [])
+        all_bars.extend(bars)
+        print(f"    Page {page}: {len(bars)} bars (total so far: {len(all_bars)})")
+
+        url = data.get("next_url")
+        if url:
+            url += f"&apiKey={POLYGON_API_KEY}"
+            time.sleep(13)  # stay under 5 req/min free tier limit
+        page += 1
+
+    if not all_bars:
+        raise RuntimeError(f"No data returned for {ticker}")
+
+    df = pd.DataFrame(all_bars)
+    # Rename Polygon fields to standard OHLCV names
+    df.rename(columns={"o": "open", "h": "high", "l": "low", "c": "close", "v": "volume", "t": "date"}, inplace=True)
+    df["date"] = pd.to_datetime(df["date"], unit="ms", utc=True)
+    df.set_index("date", inplace=True)
+    df = df[["open", "high", "low", "close", "volume"]]
+    df = df[~df.index.duplicated(keep="first")]
+
+    print(f"  Total: {len(df)} rows, columns: {list(df.columns)}")
 
     # Save raw CSV for reference
     raw_path = os.path.join(OUT_DIR, f"{ticker}_LONG.csv")
@@ -114,40 +145,14 @@ def compute_rsi(series: pd.Series, period: int = 14) -> pd.Series:
 def engineer_features(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
     """
     Engineer 16 causal features from OHLCV data.
-
-    Tiingo IEX columns may include:
-      close, high, low, open, volume
-    or market-prefixed variants:
-      marketClose, marketHigh, marketLow, marketOpen, marketVolume, marketNotional
-
+    Expects columns: open, high, low, close, volume.
     Returns (features_df, target_series) after dropping NaN rows.
     """
-    # Normalize column names — handle both Tiingo formats
-    col_map = {}
-    for col in df.columns:
-        lc = col.lower()
-        if "close" in lc and "change" not in lc:
-            col_map["close"] = col
-        elif "high" in lc:
-            col_map["high"] = col
-        elif "low" in lc:
-            col_map["low"] = col
-        elif "open" in lc:
-            col_map["open"] = col
-        elif "volume" in lc:
-            col_map["volume"] = col
-        elif "notional" in lc:
-            col_map["notional"] = col
-
-    close  = df[col_map["close"]].astype(float)
-    high   = df[col_map["high"]].astype(float)
-    low    = df[col_map["low"]].astype(float)
-    opn    = df[col_map["open"]].astype(float)
-    volume = df[col_map["volume"]].astype(float)
-
-    has_notional = "notional" in col_map
-    if has_notional:
-        notional = df[col_map["notional"]].astype(float)
+    close  = df["close"].astype(float)
+    high   = df["high"].astype(float)
+    low    = df["low"].astype(float)
+    opn    = df["open"].astype(float)
+    volume = df["volume"].astype(float)
 
     # --- Log returns (1-bar) ---
     close_ret = np.log(close / close.shift(1))
@@ -194,10 +199,7 @@ def engineer_features(df: pd.DataFrame) -> tuple[pd.DataFrame, pd.Series]:
     features["momentum_5"] = close.pct_change(periods=5)
 
     # 15: trade intensity
-    if has_notional:
-        features["trade_intensity"] = np.log(notional.abs() + 1)
-    else:
-        features["trade_intensity"] = np.log(close * volume + 1)
+    features["trade_intensity"] = np.log(close * volume + 1)
 
     # --- Target: next-bar direction ---
     target = np.sign(close.shift(-1) - close)
