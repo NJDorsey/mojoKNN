@@ -1,0 +1,83 @@
+# mojoKNN Experiment Runner Config — Empirical Runtime Complexity Sweep
+# Run with: python experiment_runner.py experiment_runtime_complexity.toml
+# Then:     python runtime_complexity_analysis.py
+#
+# Protocol (Kolli et al. adaptation):
+#   - Log-spaced n on a single AAPL dataset
+#   - 8 runs per point: first 3 discarded (warmup), median of remaining 5 used
+#   - Separate timing for tree construction (kdtree_build) vs query (kdtree_simd)
+#
+# Fits two power-law regressions on the log-log plot:
+#   1. kdtree_simd  (query-only)        → low C, k approaches theoretical log(n)
+#   2. kdtree_build + kdtree_simd       → higher C (setup), low k
+#   plus brute_simd as Kolli's k ≈ 1.33 reference.
+
+[runner]
+output_dir = "results"
+mojo_bin   = "mojo"
+
+[[datasets]]
+name          = "aapl_rc_1k"
+features_path = "HFTData/AAPL_LONG_features_causal.csv"
+labels_path   = "HFTData/AAPL_LONG_target_causal.csv"
+n_rows        = 1000
+n_features    = 16
+train_split   = 0.8
+k             = 5
+num_runs      = 8
+group         = "aapl_runtime_complexity"
+
+[[datasets]]
+name          = "aapl_rc_3k"
+features_path = "HFTData/AAPL_LONG_features_causal.csv"
+labels_path   = "HFTData/AAPL_LONG_target_causal.csv"
+n_rows        = 3000
+n_features    = 16
+train_split   = 0.8
+k             = 5
+num_runs      = 8
+group         = "aapl_runtime_complexity"
+
+[[datasets]]
+name          = "aapl_rc_10k"
+features_path = "HFTData/AAPL_LONG_features_causal.csv"
+labels_path   = "HFTData/AAPL_LONG_target_causal.csv"
+n_rows        = 10000
+n_features    = 16
+train_split   = 0.8
+k             = 5
+num_runs      = 8
+group         = "aapl_runtime_complexity"
+
+[[datasets]]
+name          = "aapl_rc_30k"
+features_path = "HFTData/AAPL_LONG_features_causal.csv"
+labels_path   = "HFTData/AAPL_LONG_target_causal.csv"
+n_rows        = 30000
+n_features    = 16
+train_split   = 0.8
+k             = 5
+num_runs      = 8
+group         = "aapl_runtime_complexity"
+
+[[datasets]]
+name          = "aapl_rc_100k"
+features_path = "HFTData/AAPL_LONG_features_causal.csv"
+labels_path   = "HFTData/AAPL_LONG_target_causal.csv"
+n_rows        = 100000
+n_features    = 16
+train_split   = 0.8
+k             = 5
+num_runs      = 8
+group         = "aapl_runtime_complexity"
+
+[[datasets]]
+name          = "aapl_rc_full"
+features_path = "HFTData/AAPL_LONG_features_causal.csv"
+labels_path   = "HFTData/AAPL_LONG_target_causal.csv"
+n_rows        = 346397
+n_features    = 16
+train_split   = 0.8
+k             = 5
+num_runs      = 8
+group         = "aapl_runtime_complexity"
